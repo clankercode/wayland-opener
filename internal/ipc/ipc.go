@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 const SocketName = "wo.sock"
@@ -39,6 +41,57 @@ func SocketPath() string {
 		rd = fmt.Sprintf("/run/user/%d", os.Getuid())
 	}
 	return filepath.Join(rd, SocketName)
+}
+
+func daemonRunning() bool {
+	conn, err := net.DialTimeout("unix", SocketPath(), 100*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+func findWodBinary() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(execPath)
+	candidate := filepath.Join(dir, "wod")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+	return exec.LookPath("wod")
+}
+
+func EnsureDaemon() error {
+	if daemonRunning() {
+		return nil
+	}
+
+	wod, err := findWodBinary()
+	if err != nil {
+		return fmt.Errorf("wod binary not found: %w", err)
+	}
+
+	cmd := exec.Command(wod)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start wod daemon: %w", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if daemonRunning() {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return fmt.Errorf("timed out waiting for wod daemon to start")
 }
 
 func SendRequest(req Request) (*Response, error) {
